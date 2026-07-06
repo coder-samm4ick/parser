@@ -1,3 +1,8 @@
 {
-  "start": "python parser_nft_bot.py"
+  "start": "python parser_nft_bot.py",
+  "build": {
+    "python": {
+      "version": "3.11"
+    }
+  }
 }
