@@ -4,6 +4,7 @@
 import asyncio
 import aiohttp
 import os
+import requests
 from typing import List, Dict
 from dotenv import load_dotenv
 
@@ -16,19 +17,21 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",")]
 
+# Удаляем старый webhook при запуске
+if BOT_TOKEN:
+    try:
+        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+    except:
+        pass
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # ============================================================
-# РЕАЛЬНЫЙ ПАРСЕР TELEGRAM NFT ПОДАРКОВ
+# ПАРСЕР
 # ============================================================
 
 class TelegramGiftParser:
-    """
-    Реальный парсер Telegram NFT-подарков
-    Использует прямой доступ к TON Blockchain
-    """
-    
     def __init__(self):
         self.session = None
         self.toncenter_url = "https://toncenter.com/api/v2/"
@@ -49,10 +52,6 @@ class TelegramGiftParser:
             return {"error": str(e)}
     
     async def get_gift_holders(self, collection_address: str) -> List[Dict]:
-        """
-        Получить всех владельцев подарков в коллекции
-        """
-        # 1. Получаем все NFT в коллекции
         items_url = f"{self.toncenter_url}getNftItems"
         items_data = await self._request(items_url, {
             "address": collection_address,
@@ -72,7 +71,6 @@ class TelegramGiftParser:
             if not owner_address or owner_address in seen:
                 continue
             
-            # 2. Получаем информацию о владельце
             account_url = f"{self.toncenter_url}getAddressInformation"
             account_data = await self._request(account_url, {
                 "address": owner_address
@@ -92,9 +90,6 @@ class TelegramGiftParser:
         return holders
     
     async def get_gift_info(self, gift_address: str) -> Dict:
-        """
-        Получить информацию о конкретном подарке
-        """
         url = f"{self.toncenter_url}getNftInfo"
         data = await self._request(url, {"address": gift_address})
         
@@ -139,25 +134,24 @@ async def start(message: types.Message):
     
     await message.answer(
         f"🟢 <b>@{message.from_user.username or 'User'}</b>, привет!\n\n"
-        "Этот бот ищет владельцев <b>Telegram NFT-подарков</b>.\n\n"
-        "🎁 <b>Команды:</b>\n"
-        "/gift <адрес_подарка> - найти владельца подарка\n"
-        "/holders <адрес_коллекции> - все владельцы в коллекции\n"
-        "/find <название> <коллекция> - поиск по названию",
+        "Этот бот ищет владельцев Telegram NFT-подарков.\n\n"
+        "🎁 Команды:\n"
+        "/gift (address) - найти владельца подарка\n"
+        "/holders (collection) - все владельцы в коллекции\n"
+        "/find (name) (collection) - поиск по названию",
         parse_mode="HTML",
         reply_markup=main_menu(is_admin)
     )
 
 @dp.message(Command("gift"))
 async def get_gift(message: types.Message, command: CommandObject):
-    """Найти владельца конкретного подарка"""
     args = command.args
     if not args:
-        await message.answer("❌ /gift <адрес_подарка>\nПример: /gift EQD4...")
+        await message.answer("❌ Использование: /gift (адрес_подарка)\nПример: /gift EQD4...")
         return
     
     gift_address = args.strip()
-    await message.answer(f"🔍 Ищу подарок...")
+    await message.answer("🔍 Ищу подарок...")
     
     info = await parser.get_gift_info(gift_address)
     
@@ -175,14 +169,13 @@ async def get_gift(message: types.Message, command: CommandObject):
 
 @dp.message(Command("holders"))
 async def get_holders(message: types.Message, command: CommandObject):
-    """Все владельцы в коллекции"""
     args = command.args
     if not args:
-        await message.answer("❌ /holders <адрес_коллекции>\nПример: /holders EQD4...")
+        await message.answer("❌ Использование: /holders (адрес_коллекции)\nПример: /holders EQD4...")
         return
     
     collection = args.strip()
-    await message.answer(f"📡 Загружаю владельцев...")
+    await message.answer("📡 Загружаю владельцев...")
     
     holders = await parser.get_gift_holders(collection)
     
@@ -202,10 +195,9 @@ async def get_holders(message: types.Message, command: CommandObject):
 
 @dp.message(Command("find"))
 async def find_gift(message: types.Message, command: CommandObject):
-    """Поиск подарка по названию в коллекции"""
     args = command.args
     if not args:
-        await message.answer("❌ /find <название> <адрес_коллекции>")
+        await message.answer("❌ Использование: /find (название) (адрес_коллекции)")
         return
     
     parts = args.split(maxsplit=1)
@@ -237,10 +229,10 @@ async def callback_handler(callback: types.CallbackQuery):
     data = callback.data
     
     if data == "search_gift":
-        await callback.message.answer("🔍 Введите команду:\n/gift <адрес_подарка>")
+        await callback.message.answer("🔍 Введите команду:\n/gift (адрес_подарка)")
     
     elif data == "holders":
-        await callback.message.answer("📊 Введите команду:\n/holders <адрес_коллекции>")
+        await callback.message.answer("📊 Введите команду:\n/holders (адрес_коллекции)")
     
     await callback.answer()
 
