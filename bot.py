@@ -154,107 +154,112 @@ async def get_owners_by_gift(gift_id: int) -> List[Dict]:
         return [dict(zip(['id', 'gift_id', 'owner_address', 'owner_username', 'quantity', 'found_at'], row)) for row in rows]
 
 # ============================================================
-# TON API ИНТЕГРАЦИЯ (MAINNET)
+# TON API ИНТЕГРАЦИЯ (MAINNET) - РЕАЛЬНЫЙ ПАРСИНГ
 # ============================================================
 
 class TONAPI:
-    """Класс для работы с TON API (Mainnet)"""
+    """Класс для работы с TON API (Mainnet) - РЕАЛЬНЫЙ ПАРСИНГ"""
     
     def __init__(self):
         self.session = None
-        self.api_key = TONCENTER_API_KEY
-        self.base_url = TONCENTER_URL  # MAINNET
+        self.base_url = "https://tonapi.io/v1/"  # БЕСПЛАТНО, БЕЗ КЛЮЧА
     
     async def _get_session(self) -> aiohttp.ClientSession:
-        """Получение или создание сессии"""
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
         return self.session
     
-    async def _make_request(self, method: str, params: Dict = None) -> Dict:
-        """Универсальный метод для запросов к TON API"""
+    async def _make_request(self, url: str) -> Dict:
+        """Универсальный GET запрос"""
         session = await self._get_session()
-        url = f"{self.base_url}{method}"
-        
-        if params is None:
-            params = {}
-        
-        if self.api_key:
-            params["api_key"] = self.api_key
-        
         try:
-            async with session.get(url, params=params, timeout=30) as response:
+            async with session.get(url, timeout=30) as response:
                 if response.status == 200:
                     return await response.json()
-                return {"error": f"HTTP {response.status}", "detail": await response.text()}
-        except asyncio.TimeoutError:
-            return {"error": "Timeout"}
+                return {"error": f"HTTP {response.status}"}
         except Exception as e:
             return {"error": str(e)}
     
-    async def get_nft_collection(self, collection_address: str) -> Dict:
-        """Получение информации о коллекции NFT (Mainnet)"""
-        return await self._make_request("getNftCollection", {"address": collection_address})
-    
-    async def get_nft_items(self, collection_address: str, limit: int = 100) -> List[Dict]:
-        """Получение NFT в коллекции (Mainnet)"""
-        result = await self._make_request("getNftItems", {
-            "address": collection_address,
-            "limit": limit
-        })
-        return result.get("result", []) if "error" not in result else []
-    
-    async def get_nft_transfers(self, address: str, limit: int = 50) -> List[Dict]:
-        """Получение истории переводов NFT (Mainnet)"""
-        result = await self._make_request("getNftTransfers", {
-            "address": address,
-            "limit": limit
-        })
-        return result.get("result", []) if "error" not in result else []
-    
-    async def get_account_info(self, address: str) -> Dict:
-        """Получение информации об аккаунте (Mainnet)"""
-        return await self._make_request("getAddressInformation", {"address": address})
-    
-    async def search_nft_holders(self, collection_address: str, target_owner: str = None) -> List[Dict]:
-        """Поиск владельцев NFT в коллекции (Mainnet)"""
+    async def search_nft_holders_by_name(self, collection_address: str, search_name: str) -> List[Dict]:
+        """
+        Поиск владельцев NFT по названию (например "Yan")
+        """
         holders = []
         seen_addresses = set()
         
-        # Пробуем получить через getNftItems
-        items = await self.get_nft_items(collection_address, 200)
+        # 1. Получаем все NFT в коллекции
+        items_url = f"{self.base_url}nft/getItems?collection={collection_address}&limit=1000"
+        data = await self._make_request(items_url)
         
-        if items:
-            for item in items:
-                owner = item.get("owner", {})
-                owner_address = owner.get("address", "")
-                
-                if owner_address and owner_address not in seen_addresses:
-                    if target_owner is None or owner_address.lower() == target_owner.lower():
-                        holders.append({
-                            "address": owner_address,
-                            "item_name": item.get("name", "Unknown"),
-                            "item_index": item.get("index", 0),
-                            "item_address": item.get("address", "")
-                        })
-                        seen_addresses.add(owner_address)
+        if "error" in data:
+            return []
         
-        # Если через getNftItems ничего не нашли, пробуем через getNftCollection
-        if not holders:
-            collection_info = await self.get_nft_collection(collection_address)
-            if "error" not in collection_info:
-                owners = collection_info.get("owners", [])
-                for owner in owners:
-                    owner_address = owner.get("address", "")
-                    if owner_address and owner_address not in seen_addresses:
-                        if target_owner is None or owner_address.lower() == target_owner.lower():
-                            holders.append({
-                                "address": owner_address,
-                                "item_name": "Unknown",
-                                "item_index": 0,
-                                "item_address": ""
-                            })
-                            seen_addresses.add(owner_address)
+        nft_items = data.get("nft_items", [])
+        
+        # 2. Фильтруем по названию (регистронезависимо)
+        for item in nft_items:
+            item_name = item.get("name", "").lower()
+            
+            # Проверяем, содержит ли название искомое слово
+            if search_name.lower() not in item_name:
+                continue
+            
+            owner = item.get("owner", {})
+            owner_address = owner.get("address", "")
+            
+            if not owner_address or owner_address in seen_addresses:
+                continue
+            
+            # 3. Получаем информацию о владельце
+            account_url = f"{self.base_url}account/getInfo?account={owner_address}"
+            account_data = await self._make_request(account_url)
+            
+            username = account_data.get("username", "") if "error" not in account_data else ""
+            
+            holders.append({
+                "address": owner_address,
+                "username": username,
+                "nft_name": item.get("name", "Unknown"),
+                "nft_address": item.get("address", ""),
+                "nft_index": item.get("index", 0)
+            })
+            seen_addresses.add(owner_address)
+        
+        return holders
+    
+    async def search_nft_holders(self, collection_address: str, target_owner: str = None) -> List[Dict]:
+        """Поиск владельцев NFT в коллекции (для обратной совместимости)"""
+        items_url = f"{self.base_url}nft/getItems?collection={collection_address}&limit=1000"
+        data = await self._make_request(items_url)
+        
+        if "error" in data:
+            return []
+        
+        holders = []
+        seen = set()
+        
+        for item in data.get("nft_items", []):
+            owner = item.get("owner", {})
+            owner_address = owner.get("address", "")
+            
+            if not owner_address or owner_address in seen:
+                continue
+            
+            if target_owner and owner_address.lower() != target_owner.lower():
+                continue
+            
+            account_url = f"{self.base_url}account/getInfo?account={owner_address}"
+            account_data = await self._make_request(account_url)
+            username = account_data.get("username", "") if "error" not in account_data else ""
+            
+            holders.append({
+                "address": owner_address,
+                "username": username,
+                "item_name": item.get("name", "Unknown"),
+                "item_index": item.get("index", 0),
+                "item_address": item.get("address", "")
+            })
+            seen.add(owner_address)
         
         return holders
 
@@ -429,6 +434,55 @@ async def cmd_list_gifts(message: types.Message):
         text += f"  🏷️ Редкость: {gift['rarity'] or 'Не указана'}\n"
         text += f"  💰 Цена: {gift['floor_price'] or 'N/A'}\n"
         text += f"  🆔 ID: {gift['id']}\n\n"
+    
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("find"))
+async def cmd_find(message: types.Message, command: CommandObject):
+    """Поиск владельцев NFT по названию (например /find Yan)"""
+    user_id = message.from_user.id
+    
+    if user_id not in ADMIN_IDS:
+        await message.answer("⛔ Нет прав.")
+        return
+    
+    args = command.args
+    if not args:
+        await message.answer(
+            "❌ Использование: /find <название> <адрес_коллекции>\n\n"
+            "Пример:\n"
+            "/find Yan EQD4FPq-PRDieyQKkizfTRPUSpMq9LkWxmVS9tzN4c4ZBUpc"
+        )
+        return
+    
+    parts = args.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("❌ Укажите название и адрес коллекции.\nПример: /find Yan EQD...")
+        return
+    
+    search_name = parts[0]
+    collection = parts[1]
+    
+    await message.answer(f"🔍 Ищу владельцев NFT с названием «{search_name}» в коллекции...")
+    
+    api = TONAPI()
+    holders = await api.search_nft_holders_by_name(collection, search_name)
+    
+    if not holders:
+        await message.answer(f"❌ NFT с названием «{search_name}» не найдены в этой коллекции.")
+        return
+    
+    text = f"🎯 <b>Найдено {len(holders)} владельцев NFT с названием «{search_name}»</b>\n\n"
+    
+    for i, holder in enumerate(holders[:20], 1):
+        text += f"{i}. 📦 <b>{holder['nft_name']}</b>\n"
+        text += f"   📍 Адрес: <code>{holder['address'][:20]}...</code>\n"
+        if holder['username']:
+            text += f"   👤 Username: @{holder['username']}\n"
+        text += "\n"
+    
+    if len(holders) > 20:
+        text += f"\n... и ещё {len(holders) - 20} владельцев."
     
     await message.answer(text, parse_mode="HTML")
 
@@ -659,6 +713,44 @@ async def run_parsing(chat_id: int, user_id: int, collection: str, target_owner:
         )
     finally:
         active_sessions[user_id] = False
+
+async def search_nft_holders_by_name(self, collection_address: str, search_name: str) -> List[Dict]:
+    """Поиск владельцев NFT по названию"""
+    holders = []
+    seen_addresses = set()
+    
+    items_url = f"{self.base_url}nft/getItems?collection={collection_address}&limit=1000"
+    data = await self._make_request(items_url)
+    
+    if "error" in data:
+        return []
+    
+    for item in data.get("nft_items", []):
+        item_name = item.get("name", "").lower()
+        
+        if search_name.lower() not in item_name:
+            continue
+        
+        owner = item.get("owner", {})
+        owner_address = owner.get("address", "")
+        
+        if not owner_address or owner_address in seen_addresses:
+            continue
+        
+        account_url = f"{self.base_url}account/getInfo?account={owner_address}"
+        account_data = await self._make_request(account_url)
+        username = account_data.get("username", "") if "error" not in account_data else ""
+        
+        holders.append({
+            "address": owner_address,
+            "username": username,
+            "nft_name": item.get("name", "Unknown"),
+            "nft_address": item.get("address", ""),
+            "nft_index": item.get("index", 0)
+        })
+        seen_addresses.add(owner_address)
+    
+    return holders
 
 # ============================================================
 # МОНИТОРИНГ АКТИВНОСТИ
