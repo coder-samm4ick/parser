@@ -4,11 +4,10 @@
 import asyncio
 import aiohttp
 import os
-import requests
 from typing import List, Dict
 from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, CommandObject
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -16,13 +15,6 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",")]
-
-# Удаляем старый webhook при запуске
-if BOT_TOKEN:
-    try:
-        requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
-    except:
-        pass
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
