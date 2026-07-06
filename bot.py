@@ -4,9 +4,7 @@
 import asyncio
 import aiohttp
 import os
-import json
-from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types, F
@@ -22,153 +20,100 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # ============================================================
-# РЕАЛЬНЫЙ ПАРСЕР МАРКЕТА TELEGRAM NFT
+# РЕАЛЬНЫЙ ПАРСЕР TELEGRAM NFT ПОДАРКОВ
 # ============================================================
 
-class TelegramNFTMarket:
+class TelegramGiftParser:
     """
-    Парсер маркета NFT Telegram
-    Использует официальные API TON и GetGems
+    Реальный парсер Telegram NFT-подарков
+    Использует прямой доступ к TON Blockchain
     """
     
     def __init__(self):
         self.session = None
-        self.tonapi_url = "https://tonapi.io/v1/"
-        self.getgems_url = "https://api.getgems.io/graphql"
+        self.toncenter_url = "https://toncenter.com/api/v2/"
     
     async def _get_session(self):
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
         return self.session
     
-    async def _request(self, url: str, headers: dict = None) -> Dict:
+    async def _request(self, url: str, params: dict = None) -> Dict:
         session = await self._get_session()
         try:
-            async with session.get(url, headers=headers or {}, timeout=30) as resp:
+            async with session.get(url, params=params or {}, timeout=30) as resp:
                 if resp.status == 200:
                     return await resp.json()
                 return {"error": f"HTTP {resp.status}"}
         except Exception as e:
             return {"error": str(e)}
     
-    async def _graphql_request(self, query: str, variables: dict = None) -> Dict:
-        """Запрос к GetGems GraphQL API"""
-        session = await self._get_session()
-        headers = {"Content-Type": "application/json"}
-        payload = {"query": query, "variables": variables or {}}
+    async def get_gift_holders(self, collection_address: str) -> List[Dict]:
+        """
+        Получить всех владельцев подарков в коллекции
+        """
+        # 1. Получаем все NFT в коллекции
+        items_url = f"{self.toncenter_url}getNftItems"
+        items_data = await self._request(items_url, {
+            "address": collection_address,
+            "limit": 1000
+        })
         
-        try:
-            async with session.post(self.getgems_url, json=payload, headers=headers, timeout=30) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-                return {"error": f"HTTP {resp.status}"}
-        except Exception as e:
-            return {"error": str(e)}
-    
-    async def get_telegram_gifts_collections(self) -> List[Dict]:
-        """
-        Получить все коллекции Telegram NFT-подарков
-        Использует GetGems API
-        """
-        query = """
-        query GetCollections($first: Int) {
-            collections(first: $first, where: {platform: {_eq: "telegram"}}) {
-                items {
-                    address
-                    name
-                    description
-                    stats {
-                        floorPrice
-                        volume24h
-                        itemsCount
-                        ownersCount
-                    }
-                }
-            }
-        }
-        """
-        result = await self._graphql_request(query, {"first": 50})
-        
-        if "error" in result:
-            return []
-        
-        return result.get("data", {}).get("collections", {}).get("items", [])
-    
-    async def get_nft_holders(self, collection_address: str, limit: int = 1000) -> List[Dict]:
-        """
-        Получить всех владельцев NFT в коллекции
-        """
-        url = f"{self.tonapi_url}nft/getItems?collection={collection_address}&limit={limit}"
-        data = await self._request(url)
-        
-        if "error" in data:
+        if "error" in items_data:
             return []
         
         holders = []
         seen = set()
         
-        for item in data.get("nft_items", []):
+        for item in items_data.get("result", []):
             owner = item.get("owner", {})
             owner_address = owner.get("address", "")
             
             if not owner_address or owner_address in seen:
                 continue
             
-            # Получаем username владельца
-            account_url = f"{self.tonapi_url}account/getInfo?account={owner_address}"
-            account_data = await self._request(account_url)
-            username = account_data.get("username", "") if "error" not in account_data else ""
+            # 2. Получаем информацию о владельце
+            account_url = f"{self.toncenter_url}getAddressInformation"
+            account_data = await self._request(account_url, {
+                "address": owner_address
+            })
+            
+            username = account_data.get("result", {}).get("username", "") if "error" not in account_data else ""
             
             holders.append({
                 "address": owner_address,
                 "username": username,
-                "nft_name": item.get("name", "Unknown"),
-                "nft_address": item.get("address", ""),
+                "gift_name": item.get("name", "Unknown"),
+                "gift_address": item.get("address", ""),
                 "index": item.get("index", 0)
             })
             seen.add(owner_address)
         
         return holders
     
-    async def search_gift_by_name(self, collection_address: str, gift_name: str) -> List[Dict]:
+    async def get_gift_info(self, gift_address: str) -> Dict:
         """
-        Найти конкретный подарок по названию
+        Получить информацию о конкретном подарке
         """
-        items = await self.get_nft_holders(collection_address, 1000)
+        url = f"{self.toncenter_url}getNftInfo"
+        data = await self._request(url, {"address": gift_address})
         
-        results = []
-        for item in items:
-            if gift_name.lower() in item["nft_name"].lower():
-                results.append(item)
-        
-        return results
-    
-    async def get_market_stats(self, collection_address: str) -> Dict:
-        """
-        Получить рыночную статистику коллекции
-        """
-        query = """
-        query GetCollectionStats($address: String!) {
-            collection(address: $address) {
-                stats {
-                    floorPrice
-                    volume24h
-                    volume7d
-                    itemsCount
-                    ownersCount
-                    listedCount
-                }
-            }
-        }
-        """
-        result = await self._graphql_request(query, {"address": collection_address})
-        
-        if "error" in result:
+        if "error" in data:
             return {}
         
-        return result.get("data", {}).get("collection", {}).get("stats", {})
+        result = data.get("result", {})
+        owner = result.get("owner", {})
+        
+        return {
+            "name": result.get("name", "Unknown"),
+            "address": result.get("address", ""),
+            "owner_address": owner.get("address", ""),
+            "owner_username": owner.get("username", ""),
+            "collection": result.get("collection", {}).get("address", ""),
+            "metadata": result.get("metadata", {})
+        }
 
-parser = TelegramNFTMarket()
+parser = TelegramGiftParser()
 
 # ============================================================
 # КЛАВИАТУРЫ
@@ -176,20 +121,12 @@ parser = TelegramNFTMarket()
 
 def main_menu(is_admin: bool = False) -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton(text="🎁 Все коллекции подарков", callback_data="list_gifts")],
         [InlineKeyboardButton(text="🔍 Найти подарок", callback_data="search_gift")],
-        [InlineKeyboardButton(text="📊 Рынок NFT", callback_data="market_stats")],
+        [InlineKeyboardButton(text="📊 Владельцы коллекции", callback_data="holders")],
     ]
     if is_admin:
         buttons.append([InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def admin_panel() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Обновить рынок", callback_data="refresh_market")],
-        [InlineKeyboardButton(text="📊 Все пользователи", callback_data="users_list")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_menu")]
-    ])
 
 # ============================================================
 # КОМАНДЫ
@@ -202,54 +139,73 @@ async def start(message: types.Message):
     
     await message.answer(
         f"🟢 <b>@{message.from_user.username or 'User'}</b>, привет!\n\n"
-        "Этот бот парсит <b>Telegram NFT-подарки</b> и показывает информацию о рынке.\n\n"
-        "🎁 <b>Что умеет:</b>\n"
-        "• Показывать все коллекции подарков\n"
-        "• Находить владельцев конкретных подарков\n"
-        "• Рыночную статистику (цена, объём)\n"
-        "• Искать подарки по названию\n\n"
-        "📌 <i>Все данные берутся из открытых источников (TON, GetGems)</i>",
+        "Этот бот ищет владельцев <b>Telegram NFT-подарков</b>.\n\n"
+        "🎁 <b>Команды:</b>\n"
+        "/gift <адрес_подарка> - найти владельца подарка\n"
+        "/holders <адрес_коллекции> - все владельцы в коллекции\n"
+        "/find <название> <коллекция> - поиск по названию",
         parse_mode="HTML",
         reply_markup=main_menu(is_admin)
     )
 
-@dp.message(Command("collections"))
-async def list_collections(message: types.Message):
-    """Показать все коллекции Telegram NFT-подарков"""
-    await message.answer("📡 Загружаю список коллекций...")
-    
-    collections = await parser.get_telegram_gifts_collections()
-    
-    if not collections:
-        await message.answer("❌ Не удалось загрузить коллекции. Попробуйте позже.")
+@dp.message(Command("gift"))
+async def get_gift(message: types.Message, command: CommandObject):
+    """Найти владельца конкретного подарка"""
+    args = command.args
+    if not args:
+        await message.answer("❌ /gift <адрес_подарка>\nПример: /gift EQD4...")
         return
     
-    text = "🎁 <b>Коллекции Telegram NFT-подарков</b>\n\n"
+    gift_address = args.strip()
+    await message.answer(f"🔍 Ищу подарок...")
     
-    for col in collections[:20]:
-        stats = col.get("stats", {})
-        floor = stats.get("floorPrice", 0)
-        volume = stats.get("volume24h", 0)
-        items = stats.get("itemsCount", 0)
-        owners = stats.get("ownersCount", 0)
-        
-        text += f"📦 <b>{col.get('name', 'Без названия')}</b>\n"
-        text += f"   💰 Пол: {floor} TON\n"
-        text += f"   📊 Объём (24ч): {volume} TON\n"
-        text += f"   🖼️ NFT: {items} | 👥 Владельцев: {owners}\n"
-        text += f"   📍 <code>{col.get('address', '')[:20]}...</code>\n\n"
+    info = await parser.get_gift_info(gift_address)
     
-    if len(collections) > 20:
-        text += f"\n... и ещё {len(collections) - 20} коллекций."
+    if not info:
+        await message.answer("❌ Подарок не найден.")
+        return
+    
+    text = f"🎁 <b>Подарок: {info.get('name', 'Unknown')}</b>\n\n"
+    text += f"📍 Адрес: <code>{info.get('address', '')}</code>\n"
+    text += f"👤 Владелец: <code>{info.get('owner_address', '')}</code>\n"
+    if info.get('owner_username'):
+        text += f"   Username: @{info.get('owner_username')}\n"
     
     await message.answer(text, parse_mode="HTML")
 
-@dp.message(Command("find_gift"))
-async def find_gift(message: types.Message, command: CommandObject):
-    """Найти подарок по названию"""
+@dp.message(Command("holders"))
+async def get_holders(message: types.Message, command: CommandObject):
+    """Все владельцы в коллекции"""
     args = command.args
     if not args:
-        await message.answer("❌ Использование: /find_gift <название> <адрес_коллекции>\nПример: /find_gift Yan EQD4...")
+        await message.answer("❌ /holders <адрес_коллекции>\nПример: /holders EQD4...")
+        return
+    
+    collection = args.strip()
+    await message.answer(f"📡 Загружаю владельцев...")
+    
+    holders = await parser.get_gift_holders(collection)
+    
+    if not holders:
+        await message.answer("❌ Коллекция не найдена или в ней нет подарков.")
+        return
+    
+    text = f"🎯 <b>Найдено {len(holders)} владельцев</b>\n\n"
+    
+    for h in holders[:10]:
+        username = f"@{h['username']}" if h['username'] else "❌ Нет username"
+        text += f"📦 {h['gift_name']}\n"
+        text += f"   👤 {username}\n"
+        text += f"   📍 <code>{h['address'][:20]}...</code>\n\n"
+    
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("find"))
+async def find_gift(message: types.Message, command: CommandObject):
+    """Поиск подарка по названию в коллекции"""
+    args = command.args
+    if not args:
+        await message.answer("❌ /find <название> <адрес_коллекции>")
         return
     
     parts = args.split(maxsplit=1)
@@ -257,105 +213,34 @@ async def find_gift(message: types.Message, command: CommandObject):
         await message.answer("❌ Укажите название и адрес коллекции.")
         return
     
-    gift_name = parts[0]
-    collection_address = parts[1]
+    name = parts[0]
+    collection = parts[1]
     
-    await message.answer(f"🔍 Ищу подарок «{gift_name}»...")
+    await message.answer(f"🔍 Ищу подарки с названием «{name}»...")
     
-    results = await parser.search_gift_by_name(collection_address, gift_name)
+    holders = await parser.get_gift_holders(collection)
+    found = [h for h in holders if name.lower() in h['gift_name'].lower()]
     
-    if not results:
-        await message.answer(f"❌ Подарок «{gift_name}» не найден в этой коллекции.")
+    if not found:
+        await message.answer(f"❌ Подарки с названием «{name}» не найдены.")
         return
     
-    text = f"🎯 <b>Найдено {len(results)} подарков с названием «{gift_name}»</b>\n\n"
-    
-    for nft in results[:10]:
-        username = f"@{nft['username']}" if nft['username'] else "❌ Нет username"
-        text += f"📦 <b>{nft['nft_name']}</b>\n"
-        text += f"   👤 Владелец: {username}\n"
-        text += f"   📍 <code>{nft['address'][:20]}...</code>\n\n"
+    text = f"🎯 <b>Найдено {len(found)} подарков с названием «{name}»</b>\n\n"
+    for h in found[:10]:
+        username = f"@{h['username']}" if h['username'] else "❌ Нет username"
+        text += f"📦 {h['gift_name']} → {username}\n"
     
     await message.answer(text, parse_mode="HTML")
-
-@dp.message(Command("market"))
-async def market_stats(message: types.Message):
-    """Показать статистику рынка"""
-    await message.answer("📡 Загружаю статистику рынка...")
-    
-    collections = await parser.get_telegram_gifts_collections()
-    
-    if not collections:
-        await message.answer("❌ Не удалось загрузить данные.")
-        return
-    
-    total_volume = sum(c.get("stats", {}).get("volume24h", 0) for c in collections)
-    total_items = sum(c.get("stats", {}).get("itemsCount", 0) for c in collections)
-    total_owners = sum(c.get("stats", {}).get("ownersCount", 0) for c in collections)
-    
-    text = "📊 <b>Рынок Telegram NFT-подарков</b>\n\n"
-    text += f"📦 Коллекций: {len(collections)}\n"
-    text += f"🖼️ Всего NFT: {total_items}\n"
-    text += f"👥 Уникальных владельцев: {total_owners}\n"
-    text += f"💰 Объём за 24ч: {total_volume:.2f} TON\n\n"
-    
-    # Топ-3 коллекции по объёму
-    sorted_cols = sorted(collections, key=lambda x: x.get("stats", {}).get("volume24h", 0), reverse=True)
-    text += "🏆 <b>Топ-3 по объёму:</b>\n"
-    for col in sorted_cols[:3]:
-        volume = col.get("stats", {}).get("volume24h", 0)
-        text += f"• {col.get('name', 'Без названия')}: {volume:.2f} TON\n"
-    
-    await message.answer(text, parse_mode="HTML")
-
-# ============================================================
-# CALLBACK HANDLERS
-# ============================================================
 
 @dp.callback_query()
 async def callback_handler(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    is_admin = user_id in ADMIN_IDS
     data = callback.data
     
-    if data == "list_gifts":
-        await list_collections(callback.message)
-        await callback.answer()
+    if data == "search_gift":
+        await callback.message.answer("🔍 Введите команду:\n/gift <адрес_подарка>")
     
-    elif data == "search_gift":
-        await callback.message.answer("🔍 Введите команду:\n/find_gift <название> <адрес_коллекции>\n\nПример:\n/find_gift Yan EQD4...")
-        await callback.answer()
-    
-    elif data == "market_stats":
-        await market_stats(callback.message)
-        await callback.answer()
-    
-    elif data == "admin_panel":
-        if is_admin:
-            await callback.message.edit_text(
-                "⚙️ <b>Админ-панель</b>",
-                parse_mode="HTML",
-                reply_markup=admin_panel()
-            )
-        else:
-            await callback.answer("⛔ Нет прав.", show_alert=True)
-    
-    elif data == "refresh_market":
-        if is_admin:
-            await callback.message.answer("🔄 Обновляю данные рынка...")
-            # Здесь можно добавить логику обновления
-            await callback.message.answer("✅ Рынок обновлён.")
-    
-    elif data == "users_list":
-        if is_admin:
-            await callback.message.answer("👥 Список пользователей пока недоступен.")
-    
-    elif data == "back_to_menu":
-        await callback.message.edit_text(
-            "🟢 <b>Главное меню</b>",
-            parse_mode="HTML",
-            reply_markup=main_menu(is_admin)
-        )
+    elif data == "holders":
+        await callback.message.answer("📊 Введите команду:\n/holders <адрес_коллекции>")
     
     await callback.answer()
 
@@ -364,7 +249,7 @@ async def callback_handler(callback: types.CallbackQuery):
 # ============================================================
 
 async def main():
-    print("🤖 Telegram NFT Market Parser Bot запущен!")
+    print("🤖 Telegram Gift Parser Bot запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
